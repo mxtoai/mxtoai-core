@@ -4,6 +4,7 @@ from typing import Any, Optional
 import toml
 from dotenv import load_dotenv
 from smolagents import ChatMessage, LiteLLMRouterModel, Tool
+from smolagents.monitoring import TokenUsage
 
 import mxtoai.schemas
 from mxtoai import exceptions
@@ -139,7 +140,6 @@ class RoutedLiteLLMModel(LiteLLMRouterModel):
         self,
         messages: list[dict[str, str | list[dict]]],
         stop_sequences: list[str] | None = None,
-        grammar: str | None = None,
         tools_to_call_from: list[Tool] | None = None,
         **kwargs,
     ) -> ChatMessage:
@@ -149,7 +149,6 @@ class RoutedLiteLLMModel(LiteLLMRouterModel):
         Args:
             messages (list[dict[str, str | list[dict]]]): List of messages to process.
             stop_sequences (list[str] | None): List of stop sequences.
-            grammar (str | None): Grammar specification for generation.
             tools_to_call_from (list[Tool] | None): List of tools available for calling.
             **kwargs: Additional arguments passed to the generate method.
 
@@ -178,7 +177,6 @@ class RoutedLiteLLMModel(LiteLLMRouterModel):
         completion_kwargs = self._prepare_completion_kwargs(
             messages=messages,
             stop_sequences=stop_sequences,
-            grammar=None if is_local_llm else grammar,
             tools_to_call_from=None if is_local_llm else tools_to_call_from,
             model=self.model_id,
             api_base=self.api_base,
@@ -190,18 +188,21 @@ class RoutedLiteLLMModel(LiteLLMRouterModel):
 
         response = self.client.completion(**completion_kwargs)
 
-        self.last_input_token_count = response.usage.prompt_tokens
-        self.last_output_token_count = response.usage.completion_tokens
+        self._last_input_token_count = response.usage.prompt_tokens
+        self._last_output_token_count = response.usage.completion_tokens
         return ChatMessage.from_dict(
             response.choices[0].message.model_dump(include={"role", "content", "tool_calls"}),
             raw=response,
+            token_usage=TokenUsage(
+                input_tokens=response.usage.prompt_tokens,
+                output_tokens=response.usage.completion_tokens,
+            ),
         )
 
     def __call__(
         self,
         messages: list[dict[str, Any]],  # MODIFIED type hint for messages
         stop_sequences: Optional[list[str]] = None,
-        grammar: Optional[str] = None,
         tools_to_call_from: Optional[list[Tool]] = None,
         **kwargs,  # kwargs from the caller of this RoutedLiteLLMModel instance
     ) -> ChatMessage:
@@ -211,7 +212,6 @@ class RoutedLiteLLMModel(LiteLLMRouterModel):
         Args:
             messages (list[dict[str, Any]]): List of messages to process.
             stop_sequences (Optional[list[str]]): List of stop sequences.
-            grammar (Optional[str]): Grammar to use for the response.
             tools_to_call_from (Optional[list[Tool]]): List of tools to call from.
             **kwargs: Additional arguments passed to the generate method.
 
@@ -238,7 +238,6 @@ class RoutedLiteLLMModel(LiteLLMRouterModel):
                 chat_message = self.generate(
                     messages=messages,
                     stop_sequences=stop_sequences,
-                    grammar=grammar,
                     tools_to_call_from=tools_to_call_from,
                     **kwargs_for_super_generate,
                 )
