@@ -36,7 +36,7 @@ DEFAULT_EMAIL_HANDLES = [
         aliases=["custom", "agent", "assist", "assistant", "hi", "hello", "question"],
         process_attachments=True,
         deep_research_mandatory=False,
-        target_model="gpt-4",
+        target_model="gpt-4-reasoning",
         task_template=template_prompts.ASK_TEMPLATE,
         output_template=output_prompts.ASK_OUTPUT_GUIDELINES,
     ),

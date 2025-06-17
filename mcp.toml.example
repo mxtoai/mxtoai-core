@@ -1,0 +1,109 @@
+# MCP Server Configuration
+# This file demonstrates all supported MCP server types and their configuration options
+
+[mcp_servers]
+
+# === STDIO SERVERS (Subprocess-based) ===
+# Most common type - runs MCP servers as subprocesses
+
+[mcp_servers.github_npx]
+enabled = true
+type = "stdio"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-github"]
+env = { GITHUB_PERSONAL_ACCESS_TOKEN = "${GITHUB_PERSONAL_ACCESS_TOKEN}" }
+
+[mcp_servers.filesystem]
+enabled = false
+type = "stdio"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/allowed/directory"]
+
+[mcp_servers.brave_search]
+enabled = false
+type = "stdio"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-brave-search"]
+env = { BRAVE_API_KEY = "${BRAVE_API_KEY}" }
+
+[mcp_servers.postgres]
+enabled = false
+type = "stdio"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-postgres"]
+env = { POSTGRES_CONNECTION_STRING = "${POSTGRES_CONNECTION_STRING}" }
+
+# === HTTP SERVERS ===
+
+# Streamable HTTP (Recommended for HTTP-based servers)
+[mcp_servers.web_api_streamable]
+enabled = false
+type = "streamable-http"
+url = "http://localhost:8000/mcp"
+headers = { "Authorization" = "Bearer ${API_TOKEN}" }
+timeout = 30.0
+sse_read_timeout = 300.0
+
+# SSE (Legacy HTTP+SSE transport - deprecated but still supported)
+[mcp_servers.web_api_sse]
+enabled = false
+type = "sse"
+url = "http://localhost:8001/mcp"
+headers = { "X-API-Key" = "${API_KEY}" }
+timeout = 30.0
+sse_read_timeout = 300.0
+
+# Custom HTTP server with authentication
+[mcp_servers.enterprise_api]
+enabled = false
+type = "streamable-http"
+url = "https://api.company.com/mcp"
+headers = {
+    "Authorization" = "Bearer ${ENTERPRISE_TOKEN}",
+    "X-Client-Version" = "1.0.0"
+}
+timeout = 60.0
+sse_read_timeout = 600.0
+
+# === WEBSOCKET SERVERS (Future support) ===
+# Note: WebSocket support may be added in future versions
+
+[mcp_servers.websocket_example]
+enabled = false
+type = "websocket"
+url = "ws://localhost:9000/mcp"
+# WebSocket configuration would go here when supported
+
+# === CONFIGURATION NOTES ===
+#
+# Environment Variables:
+# - Use ${VAR_NAME} syntax to reference environment variables
+# - Variables are resolved at runtime
+# - Make sure to set required environment variables before starting
+#
+# Server Types:
+# - "stdio": Subprocess-based servers (most common)
+# - "streamable-http": Modern HTTP transport (recommended for HTTP)
+# - "sse": Legacy HTTP+SSE transport (deprecated)
+# - "websocket": Future support (not yet implemented)
+#
+# Common Parameters:
+# - enabled: Boolean to enable/disable the server
+# - type: Server transport type
+#
+# Stdio Parameters:
+# - command: Executable command
+# - args: Array of command arguments
+# - env: Environment variables for the subprocess
+#
+# HTTP Parameters:
+# - url: Server endpoint URL
+# - headers: Optional HTTP headers
+# - timeout: HTTP timeout for regular operations (seconds)
+# - sse_read_timeout: Timeout for SSE read operations (seconds)
+# - auth: Authentication (not yet implemented)
+#
+# Security Notes:
+# - Never commit API keys or tokens to version control
+# - Use environment variables for sensitive data
+# - Validate server URLs and certificates in production

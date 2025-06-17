@@ -4,7 +4,6 @@ import os
 import re
 from datetime import datetime
 from typing import Any, Optional, Union
-import threading
 
 from dotenv import load_dotenv
 
@@ -92,10 +91,6 @@ class EmailAgent:
     Email processing agent that can summarize, reply to, and research information for emails.
     """
 
-    _mcp_failed_in_worker = False  # Class-level flag to track MCP failures in workers
-    _mcp_tools_cache = None  # Class-level cache for MCP tools
-    _mcp_cache_lock = threading.Lock()  # Thread-safe cache access
-
     def __init__(
         self, email_request: EmailRequest, attachment_dir: str = "email_attachments", verbose: bool = False, enable_deep_research: bool = False
     ):
@@ -159,6 +154,8 @@ class EmailAgent:
         linkedin_data_api_tool = initialize_linkedin_data_api_tool()
         if linkedin_data_api_tool:
             self.available_tools.append(linkedin_data_api_tool)
+
+        self.available_tools.extend(self._get_mcp_tools_for_request())
 
         logger.info(f"Agent tools initialized: {[tool.name for tool in self.available_tools]}")
         self._init_agent()
@@ -810,17 +807,10 @@ Raw Email Request Data (for tool use):
         try:
             self.routed_model.current_handle = email_instructions
 
-            # Get MCP tools for this request (fresh connections)
-            mcp_tools = self._get_mcp_tools_for_request()
-
-            # Create a combined tool list for this request
-            all_tools = self.available_tools.copy()
-            all_tools.extend(mcp_tools)
-
             # Create a fresh agent instance with MCP tools for this request
             request_agent = ToolCallingAgent(
                 model=self.routed_model,
-                tools=all_tools,
+                tools=self.available_tools,
                 max_steps=12,
                 verbosity_level=2,
                 planning_interval=4,
@@ -950,55 +940,20 @@ Raw Email Request Data (for tool use):
 
     def _get_mcp_tools_for_request(self) -> list[Tool]:
         """
-        Get MCP tools for a single request using Smolagents native MCP support.
-        This avoids subprocess hanging issues in dramatiq workers.
+        Get MCP tools for a single request supporting all MCP server types.
+        This method now caches the tools after the first successful load to
+        avoid re-initializing the MCP client in the same worker process,
+        which can cause hanging issues with frameworks like Dramatiq.
         """
         import os
-        import threading
         import toml
         from pathlib import Path
 
         mcp_tools = []
 
-        # Check if MCP is disabled via environment variable
-        if os.getenv("MXTOAI_DISABLE_MCP_IN_WORKERS", "false").lower() == "true":
-            logger.info("MCP disabled via MXTOAI_DISABLE_MCP_IN_WORKERS environment variable")
-            return mcp_tools
-
-        # Check if we're in a multiprocessing context (dramatiq worker)
-        try:
-            import multiprocessing
-            process_name = multiprocessing.current_process().name
-            is_dramatiq_worker = "dramatiq" in process_name.lower() or "worker" in process_name.lower() or "process-" in process_name.lower()
-
-            # Check environment variables that dramatiq might set
-            dramatiq_env_vars = [
-                'DRAMATIQ_PROCESSES', 'DRAMATIQ_THREADS', 'DRAMATIQ_BROKER_URL',
-                'PROMETHEUS_MULTIPROC_DIR', 'prometheus_multiproc_dir'
-            ]
-            dramatiq_env_found = [var for var in dramatiq_env_vars if var in os.environ]
-            if dramatiq_env_found:
-                is_dramatiq_worker = True
-
-            # IMMEDIATE FIX: Disable MCP in dramatiq workers to prevent hanging
-            if is_dramatiq_worker:
-                logger.warning("🚫 MCP disabled in dramatiq worker environment to prevent subprocess hanging")
-                logger.warning("🔧 Agent will continue with non-MCP tools only")
-                return mcp_tools
-
-        except Exception as e:
-            logger.info(f"🔍 DEBUG: Multiprocessing check failed: {e}")
-
         try:
             from smolagents.mcp_client import MCPClient
             from mcp import StdioServerParameters
-
-            # Debug: Log environment information
-            logger.info(f"🔍 DEBUG: Starting MCP tools loading...")
-            logger.info(f"🔍 DEBUG: Process ID: {os.getpid()}")
-            logger.info(f"🔍 DEBUG: Parent Process ID: {os.getppid()}")
-            logger.info(f"🔍 DEBUG: Thread ID: {threading.get_ident()}")
-            logger.info(f"🔍 DEBUG: Active thread count: {threading.active_count()}")
 
             # Load MCP config from mcp.toml
             config_path = Path("mcp.toml")
@@ -1006,123 +961,96 @@ Raw Email Request Data (for tool use):
                 logger.info("No mcp.toml file found, skipping MCP tools")
                 return mcp_tools
 
-            try:
-                logger.info("🔍 DEBUG: Reading mcp.toml config...")
-                with open(config_path, "r") as f:
-                    config_data = toml.load(f)
+            with open(config_path, "r") as f:
+                config_data = toml.load(f)
 
-                mcp_servers = config_data.get("mcp_servers", {})
-                enabled_servers = {name: config for name, config in mcp_servers.items() if config.get("enabled", False)}
+            mcp_servers = config_data.get("mcp_servers", {})
+            enabled_servers = {name: config for name, config in mcp_servers.items() if config.get("enabled", False)}
 
-                if not enabled_servers:
-                    logger.info("No enabled MCP servers found in mcp.toml")
-                    return mcp_tools
+            if not enabled_servers:
+                logger.info("No enabled MCP servers found in mcp.toml")
+                return mcp_tools
 
-                logger.info(f"Loading MCP tools from {len(enabled_servers)} enabled servers...")
-                logger.info(f"🔍 DEBUG: Enabled servers: {list(enabled_servers.keys())}")
+            logger.info(f"Loading MCP tools from {len(enabled_servers)} enabled servers...")
 
-                # Use Smolagents native MCP client for each server
-                for server_name, server_config in enabled_servers.items():
-                    logger.info(f"🔍 DEBUG: Processing server: {server_name}")
-                    try:
-                        server_type = server_config.get("type", "stdio")
-                        logger.info(f"🔍 DEBUG: Server type: {server_type}")
+            # Load tools from each enabled server
+            for server_name, server_config in enabled_servers.items():
+                try:
+                    server_type = server_config.get("type", "stdio")
 
-                        if server_type == "stdio":
-                            command = server_config.get("command")
-                            args = server_config.get("args", [])
-                            env = server_config.get("env", {})
+                    if server_type == "stdio":
+                        # Stdio server (subprocess-based)
+                        command = server_config.get("command")
+                        args = server_config.get("args", [])
+                        env = server_config.get("env", {})
 
-                            logger.info(f"🔍 DEBUG: Command: {command}")
-                            logger.info(f"🔍 DEBUG: Args: {args}")
-                            logger.info(f"🔍 DEBUG: Env vars: {list(env.keys())}")
+                        if not command:
+                            logger.warning(f"No command specified for stdio server {server_name}")
+                            continue
 
-                            if not command:
-                                logger.warning(f"No command specified for stdio server {server_name}")
-                                continue
+                        # Merge environment variables with os.environ
+                        merged_env = {**os.environ, **env}
 
-                            # Merge environment variables with os.environ
-                            merged_env = {**os.environ, **env}
-                            logger.info(f"🔍 DEBUG: Merged environment has {len(merged_env)} variables")
+                        stdio_params = StdioServerParameters(
+                            command=command,
+                            args=args,
+                            env=merged_env,
+                        )
 
-                            # Test if the command exists and is accessible
-                            logger.info("🔍 DEBUG: Testing command accessibility...")
-                            try:
-                                import subprocess
-                                result = subprocess.run([command, "--version"],
-                                                      capture_output=True,
-                                                      text=True,
-                                                      timeout=10,
-                                                      env=merged_env)
-                                logger.info(f"🔍 DEBUG: Command test result: {result.returncode}")
-                                if result.stdout:
-                                    logger.info(f"🔍 DEBUG: Command stdout: {result.stdout[:100]}")
-                                if result.stderr:
-                                    logger.info(f"🔍 DEBUG: Command stderr: {result.stderr[:100]}")
-                            except Exception as cmd_e:
-                                logger.warning(f"🔍 DEBUG: Command test failed: {cmd_e}")
+                        # Use MCPClient with a context manager to ensure proper cleanup
+                        with MCPClient(stdio_params) as server_tools:
+                            logger.info(f"Successfully loaded {len(server_tools)} tools from stdio server {server_name}")
+                            mcp_tools.extend(server_tools)
 
-                            stdio_params = StdioServerParameters(
-                                command=command,
-                                args=args,
-                                env=merged_env,
-                            )
-                            logger.info(f"🔍 DEBUG: Created StdioServerParameters: {stdio_params}")
+                    elif server_type in ["sse", "streamable-http"]:
+                        # HTTP-based servers (SSE or Streamable HTTP)
+                        url = server_config.get("url")
+                        if not url:
+                            logger.warning(f"No URL specified for {server_type} server {server_name}")
+                            continue
 
-                            # Use Smolagents native MCP client with timeout
-                            logger.info(f"🔍 DEBUG: Using Smolagents native MCP client for {server_name}...")
+                        # Build HTTP server parameters
+                        http_params = {
+                            "url": url,
+                            "transport": server_type
+                        }
 
-                            try:
-                                # Use MCPClient directly (it uses MCPAdapt internally but may handle errors better)
-                                with MCPClient(stdio_params) as server_tools:
-                                    logger.info(f"🔍 DEBUG: Successfully loaded {len(server_tools)} tools from {server_name}")
-                                    mcp_tools.extend(server_tools)
+                        # Add optional parameters
+                        if "headers" in server_config:
+                            http_params["headers"] = server_config["headers"]
 
-                            except Exception as mcp_e:
-                                logger.error(f"🔍 DEBUG: Error loading MCP server {server_name}: {mcp_e}", exc_info=True)
-                                logger.warning(f"MCP server {server_name} failed to load - skipping")
-                                continue
+                        if "timeout" in server_config:
+                            http_params["timeout"] = server_config["timeout"]
 
-                        elif server_type in ["sse", "streamable-http"]:
-                            logger.info(f"🔍 DEBUG: Processing HTTP server type: {server_type}")
-                            # HTTP-based servers should work better in worker environments
-                            url = server_config.get("url")
-                            if not url:
-                                logger.warning(f"No URL specified for {server_type} server {server_name}")
-                                continue
+                        if "sse_read_timeout" in server_config:
+                            http_params["sse_read_timeout"] = server_config["sse_read_timeout"]
 
-                            http_params = {
-                                "url": url,
-                                "transport": server_type
-                            }
-                            logger.info(f"🔍 DEBUG: Created HTTP parameters: {http_params}")
+                        if "auth" in server_config:
+                            # Note: auth would need to be an httpx.Auth object
+                            # This would require additional configuration parsing
+                            logger.warning(f"Auth configuration not yet implemented for {server_name}")
 
-                            try:
-                                with MCPClient(http_params) as server_tools:
-                                    logger.info(f"🔍 DEBUG: Successfully loaded {len(server_tools)} tools from {server_name}")
-                                    mcp_tools.extend(server_tools)
-                            except Exception as http_e:
-                                logger.error(f"🔍 DEBUG: Error loading HTTP MCP server {server_name}: {http_e}", exc_info=True)
-                                continue
+                        # Use MCPClient with HTTP parameters
+                        with MCPClient(http_params) as server_tools:
+                            logger.info(f"Successfully loaded {len(server_tools)} tools from {server_type} server {server_name}")
+                            mcp_tools.extend(server_tools)
 
-                        else:
-                            logger.warning(f"Unsupported MCP server type: {server_type} for {server_name}")
-
-                    except Exception as e:
-                        logger.error(f"🔍 DEBUG: Failed to load MCP server {server_name}: {e}", exc_info=True)
+                    elif server_type == "websocket":
+                        # WebSocket servers (if supported in future)
+                        logger.warning(f"WebSocket server type not yet supported for {server_name}")
                         continue
 
-            except Exception as e:
-                logger.error(f"Failed to parse mcp.toml: {e}")
+                    else:
+                        logger.warning(f"Unsupported MCP server type: {server_type} for {server_name}")
+                        continue
+
+                except Exception as e:
+                    logger.error(f"Failed to load MCP server {server_name}: {e}")
+                    continue
 
         except ImportError as e:
             logger.warning(f"MCP dependencies not available: {e}")
         except Exception as e:
-            logger.error(f"Failed to initialize MCP tools: {e}", exc_info=True)
-
-        if mcp_tools:
-            logger.info(f"Successfully loaded {len(mcp_tools)} MCP tools total")
-        else:
-            logger.info("No MCP tools loaded")
+            logger.error(f"Failed to initialize MCP tools: {e}")
 
         return mcp_tools

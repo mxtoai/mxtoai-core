@@ -36,11 +36,11 @@ if __name__ == "__main__":
     # Construct the dramatiq command
     cmd = [
         "dramatiq",
-        *modules,
         "--processes",
         str(os.getenv("DRAMATIQ_PROCESSES", "8")),
         "--threads",
         str(os.getenv("DRAMATIQ_THREADS", "8")),
+        "--use-spawn",  # Use spawn instead of fork to avoid subprocess issues
         "--watch",
         str(Path(__file__).parent.parent),  # Watch the mxtoai directory
     ]

@@ -144,26 +144,7 @@ def process_email_task(
     now_iso = datetime.now().isoformat()  # Define now_iso earlier for use in error cases
 
     try:
-        email_instructions: Union[ProcessingInstructions, None] = processing_instructions_resolver(handle)
-        if not email_instructions:  # This case might be redundant if resolver always raises on not found
-            logger.error(f"Unsupported email handle (resolved to None): {handle}")
-            return DetailedEmailProcessingResult(
-                metadata=ProcessingMetadata(
-                    processed_at=now_iso,
-                    mode=handle,
-                    errors=[ProcessingError(message=f"Unsupported email handle (resolved to None): {handle}")],
-                    email_sent=EmailSentStatus(
-                        status="error",
-                        error=f"Unsupported email handle (resolved to None): {handle}",
-                        timestamp=now_iso,
-                    ),
-                ),
-                email_content=EmailContentDetails(text=None, html=None, enhanced=None),
-                attachments=AttachmentsProcessingResult(processed=[]),
-                calendar_data=None,
-                research=None,
-                pdf_export=None,
-            )
+        email_instructions = processing_instructions_resolver(handle)
     except exceptions.UnspportedHandleException as e:  # Catch specific exception
         logger.error(f"Unsupported email handle: {handle}. Error: {e!s}")
         return DetailedEmailProcessingResult(
@@ -181,7 +162,6 @@ def process_email_task(
             research=None,
             pdf_export=None,
         )
-    # Removed the early return for `if not email_instructions` as the try-except handles it.
 
     email_agent = EmailAgent(email_request=email_request)
 
