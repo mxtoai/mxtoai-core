@@ -44,7 +44,7 @@ class RoutedLiteLLMModel(LiteLLMRouterModel):
             msg = (
                 "LITELLM_DEFAULT_MODEL_GROUP environment variable not found. Please set it to the default model group."
             )
-            raise exceptions.EnvironmentVariableNotFoundException(msg)
+            raise exceptions.EnvironmentVariableNotFoundError(msg)
 
         # Initialize token count attributes before calling super().__init__
         self._last_input_token_count = 0
@@ -224,6 +224,11 @@ class RoutedLiteLLMModel(LiteLLMRouterModel):
             custom_role_conversions=self.custom_role_conversions,
             **kwargs,
         )
+
+        # models under the 'thinking' group do not support stop sequences
+        # This is a workaround for the current limitation in LiteLLMRouterModel
+        if self.model_id == "thinking":
+            completion_kwargs.pop("stop", None)
 
         response = self.client.completion(**completion_kwargs)
 

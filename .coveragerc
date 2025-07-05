@@ -1,6 +1,6 @@
 [run]
 source = mxtoai
-omit = 
+omit =
     */tests/*
     */test_*
     mxtoai/db/alembic/env.py
@@ -25,4 +25,4 @@ exclude_lines =
     @(abc\.)?abstractmethod
 
 [html]
-directory = htmlcov 
+directory = htmlcov

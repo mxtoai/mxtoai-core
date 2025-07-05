@@ -68,8 +68,4 @@ echo "2. Edit model.config.toml with your AI model credentials"
 echo "3. Validate configuration: ./scripts/validate-env.sh"
 echo "4. Run: ./scripts/start-local.sh"
 echo ""
-<<<<<<< fixed_linting
-echo "For more information, see README.md"
-=======
 echo "For more information, see README.md and ENV_VARIABLES.md"
->>>>>>> master

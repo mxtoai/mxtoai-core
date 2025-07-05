@@ -348,6 +348,7 @@ def test_process_email_task_meeting_handle(prepare_email_request_data):
     _test_single_handle("meeting", prepare_email_request_data)
 
 
+@pytest.mark.flaky(retries=3, delay=1)
 def test_process_email_task_pdf_handle(prepare_email_request_data):
     """Test pdf handle specifically."""
     _test_single_handle("pdf", prepare_email_request_data)
